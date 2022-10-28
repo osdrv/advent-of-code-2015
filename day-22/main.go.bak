@@ -1,0 +1,208 @@
+package main
+
+import "fmt"
+
+type PlayerType uint8
+
+const (
+	_ PlayerType = iota
+	PLAYER
+	BOSS
+)
+
+type Player struct {
+	typ                     PlayerType
+	hp, mana, damage, armor int
+	manaSpent               int
+}
+
+func NewPlayer(typ PlayerType, hp, mana, damage, armor int) *Player {
+	return &Player{typ, hp, mana, damage, armor, 0}
+}
+
+func (p *Player) IsAlive() bool {
+	return p.hp > 0
+}
+
+func (p Player) String() string {
+	ptyp := "Player"
+	if p.typ == BOSS {
+		ptyp = "Boss"
+	}
+	return fmt.Sprintf("%s(hp: %d, mana: %d, dmg: %d, armor: %d)", ptyp, p.hp, p.mana, p.damage, p.armor)
+}
+
+type SpellType uint8
+
+const (
+	_ SpellType = iota
+	MISSILE
+	DRAIN
+	SHIELD
+	POISON
+	RECHARGE
+)
+
+type Spell struct {
+	typ                                       SpellType
+	cost, damage, heal, armor, mana, duration int
+}
+
+func (s Spell) IsAttack() bool {
+	return s.damage > 0
+}
+
+func (s Spell) String() string {
+	switch s.typ {
+	case MISSILE:
+		return "missile"
+	case DRAIN:
+		return "drain"
+	case SHIELD:
+		return "shield"
+	case POISON:
+		return "poison"
+	case RECHARGE:
+		return "recharge"
+	default:
+		return "<wtf>"
+	}
+}
+
+var (
+	Spells = []Spell{
+		{typ: MISSILE, cost: 53, damage: 4},
+		{typ: DRAIN, cost: 73, damage: 2, heal: 2},
+		{typ: SHIELD, cost: 113, duration: 6, armor: 7},
+		{typ: POISON, cost: 173, duration: 6, damage: 3},
+		{typ: RECHARGE, cost: 229, duration: 5, mana: 101},
+	}
+)
+
+func applySpell(p Player, sp Spell, isAttack bool, dd int) Player {
+	dur := "instant"
+	if dd > 0 {
+		dur = fmt.Sprintf("%d turns", dd)
+	}
+	if isAttack {
+		if sp.damage > 0 {
+			debugf("spell %s(%s) is attacking %s", sp, dur, p)
+			p.hp -= sp.damage
+		}
+	} else {
+		if sp.heal > 0 || sp.armor > 0 || sp.mana > 0 {
+			debugf("spell %s(%s) is defending %s", sp, dur, p)
+			if sp.armor > 0 {
+				p.armor += sp.armor
+			}
+			if sp.heal > 0 {
+				p.hp += sp.heal
+			}
+			if sp.mana > 0 {
+				p.mana += sp.mana
+			}
+		}
+	}
+	debugf("player state: %+v", p)
+	return p
+}
+
+func isGameOver(p1, p2 Player) (int, bool, bool) {
+	if !p1.IsAlive() {
+		// only inspect p2
+		p1, p2 = p2, p1
+	}
+	return p1.manaSpent, (p1.IsAlive() && p1.typ == PLAYER), !(p1.IsAlive() && p2.IsAlive())
+}
+
+func play(p1, p2 *Player) int {
+	var recurse func(at, df Player, spells1, spells2 [5]int) (int, bool)
+	recurse = func(at, df Player, spat, spdf [5]int) (int, bool) {
+		debugf("==========================")
+		for ix := 0; ix < len(spat); ix++ {
+			if spat[ix] == 0 {
+				continue
+			}
+			sp := Spells[ix]
+			if sp.damage > 0 {
+				df = applySpell(df, sp, true, spat[ix])
+			} else {
+				at = applySpell(at, sp, false, spat[ix])
+			}
+			spat[ix] = max(0, spat[ix]-1)
+		}
+		for ix := 0; ix < len(spdf); ix++ {
+			if spdf[ix] == 0 {
+				continue
+			}
+			sp := Spells[ix]
+			if sp.damage > 0 {
+				at = applySpell(at, sp, true, spdf[ix])
+			} else {
+				df = applySpell(df, sp, false, spdf[ix])
+			}
+			spdf[ix] = max(0, spdf[ix]-1)
+		}
+
+		if m, kk, ok := isGameOver(at, df); ok {
+			return m, kk
+		}
+
+		if at.damage > 0 {
+			// basic damage deal
+			df.hp -= max(1, at.damage-df.armor)
+			if m, kk, ok := isGameOver(at, df); ok {
+				return m, kk
+			}
+			df.armor = 0
+			return recurse(df, at, spdf, spat)
+		} else {
+			// we cast a spell
+			mincost := ALOT
+			okok := false
+			for ix, sp := range Spells {
+				if spat[ix] > 0 {
+					continue
+				}
+				if at.mana >= sp.cost {
+					atnext := at
+					atnext.armor = 0
+					atnext.mana -= sp.cost
+					atnext.manaSpent += sp.cost
+					dfnext := df
+					if sp.duration == 0 {
+						// appply immediately and check
+						atnext = applySpell(atnext, sp, false, 0)
+						dfnext = applySpell(dfnext, sp, true, 0)
+						if m, kk, ok := isGameOver(atnext, dfnext); ok {
+							return m, kk
+						}
+					} else {
+						spat[ix] = sp.duration
+					}
+					if cost, ok := recurse(dfnext, atnext, spdf, spat); ok && cost < mincost {
+						mincost = cost
+						okok = true
+					}
+					spat[ix] = 0
+				}
+			}
+			return mincost, okok
+		}
+	}
+
+	if v, ok := recurse(*p1, *p2, [5]int{0, 0, 0, 0, 0}, [5]int{0, 0, 0, 0, 0}); ok {
+		return v
+	}
+	return ALOT
+}
+
+func main() {
+	//player := NewPlayer(PLAYER, 10, 250, 0, 0)
+	//boss := NewPlayer(BOSS, 14, 0, 8, 0)
+
+	player := NewPlayer(PLAYER, 50, 500, 0, 0)
+	boss := NewPlayer(BOSS, 55, 0, 8, 0)
+
+	printf("min mana: %d", play(player, boss))
+}
